@@ -3,3 +3,7 @@
 codegen.log
 Brewfile.lock.json
 .idea/
+.codex
+.env
+dist/
+debug_log/
