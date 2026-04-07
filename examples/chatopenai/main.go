@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -190,6 +191,8 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 	var result streamedResponse
 	printReasoningHeader := true
 	printOutputHeader := true
+	outputItems := make(map[int64]responses.ResponseOutputItemUnion)
+	outputIndexes := make([]int64, 0)
 
 	for stream.Next() {
 		event := stream.Current()
@@ -251,6 +254,11 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 				result.answer += event.Refusal
 				result.printedAnything = true
 			}
+		case "response.output_item.done":
+			if _, ok := outputItems[event.OutputIndex]; !ok {
+				outputIndexes = append(outputIndexes, event.OutputIndex)
+			}
+			outputItems[event.OutputIndex] = event.Item
 		case "response.completed", "response.incomplete", "response.failed":
 			result.response = event.Response
 		}
@@ -279,8 +287,23 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 		}
 		return result, errors.New("response incomplete")
 	}
+	if len(outputItems) > 0 {
+		result.response.Output = orderedOutputItems(outputItems, outputIndexes)
+	}
 
 	return result, nil
+}
+
+func orderedOutputItems(items map[int64]responses.ResponseOutputItemUnion, indexes []int64) []responses.ResponseOutputItemUnion {
+	sorted := append([]int64(nil), indexes...)
+	slices.Sort(sorted)
+
+	output := make([]responses.ResponseOutputItemUnion, 0, len(sorted))
+	for _, index := range sorted {
+		output = append(output, items[index])
+	}
+
+	return output
 }
 
 // formatError renders API and transport errors for terminal output.

@@ -82,6 +82,9 @@ func (s *eventStreamDecoder) Next() bool {
 
 		// Dispatch event on an empty line
 		if len(txt) == 0 {
+			if event == "" && data.Len() == 0 {
+				continue
+			}
 			s.evt = Event{
 				Type: event,
 				Data: data.Bytes(),
@@ -117,6 +120,15 @@ func (s *eventStreamDecoder) Next() bool {
 
 	if s.scn.Err() != nil {
 		s.err = s.scn.Err()
+		return false
+	}
+
+	if event != "" || data.Len() > 0 {
+		s.evt = Event{
+			Type: event,
+			Data: data.Bytes(),
+		}
+		return true
 	}
 
 	return false
