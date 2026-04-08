@@ -27,12 +27,6 @@ const (
 	maxToolRounds  = 8
 )
 
-type streamedResponse struct {
-	answer          string
-	printedAnything bool
-	response        responses.Response
-}
-
 var authorizationHeaderPattern = regexp.MustCompile(`(?im)^(Authorization:\s*Bearer\s+)[^\r\n]+`)
 
 type redactingLogWriter struct {
@@ -133,37 +127,23 @@ func main() {
 
 // runMessage executes one committed user message, including any follow-up tool-call rounds.
 func runMessage(ctx context.Context, client openai.Client, model string, history responses.ResponseInputParam, toolRegistry *tools.Registry) (responses.ResponseInputParam, error) {
-	var combinedAnswer strings.Builder
 
 	for range maxToolRounds {
-		streamed, err := streamResponse(ctx, client, model, history, toolRegistry.Definitions())
+		response, err := streamResponse(ctx, client, model, history, toolRegistry.Definitions())
 		if err != nil {
-			if streamed.printedAnything {
-				fmt.Println()
-			}
+			fmt.Println()
 			return history, err
 		}
 
-		history = appendReplayItems(history, streamed.response)
-		combinedAnswer.WriteString(streamed.answer)
-
-		toolCalls := extractFunctionCalls(streamed.response)
+		history = appendReplayItems(history, response)
+		toolCalls := extractFunctionCalls(response)
 		if len(toolCalls) == 0 {
-			if strings.TrimSpace(combinedAnswer.String()) == "" {
-				if streamed.printedAnything {
-					fmt.Println()
-				}
-				fmt.Print("Output: [no text returned]")
-			}
 			fmt.Print("\n\n")
 			return history, nil
 		}
 
-		if streamed.printedAnything {
-			fmt.Println()
-		}
 		for _, call := range toolCalls {
-			fmt.Printf("Tool: %s\n", call.Name)
+			fmt.Printf("\nTool: %s\n", call.Name)
 			history = append(history, toolRegistry.Execute(ctx, call))
 		}
 		fmt.Println()
@@ -173,7 +153,7 @@ func runMessage(ctx context.Context, client openai.Client, model string, history
 }
 
 // streamResponse streams a single model response and captures the final payload.
-func streamResponse(ctx context.Context, client openai.Client, model string, history responses.ResponseInputParam, availableTools []responses.ToolUnionParam) (streamedResponse, error) {
+func streamResponse(ctx context.Context, client openai.Client, model string, history responses.ResponseInputParam, availableTools []responses.ToolUnionParam) (responses.Response, error) {
 	stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
 		Model: model,
 		Include: []responses.ResponseIncludable{
@@ -190,7 +170,7 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 		Tools: availableTools,
 	})
 
-	var result streamedResponse
+	var result responses.Response
 	printReasoningHeader := true
 	printOutputHeader := true
 	outputItems := make(map[int64]responses.ResponseOutputItemUnion)
@@ -202,67 +182,23 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 		switch event.Type {
 		case "response.reasoning_summary_text.delta":
 			if printReasoningHeader {
-				fmt.Print("Reasoning: ")
+				fmt.Print("\nReasoning: ")
 				printReasoningHeader = false
-				result.printedAnything = true
 			}
 			fmt.Print(event.Delta)
-			result.printedAnything = true
-		case "response.reasoning_summary_text.done":
-			if printReasoningHeader && event.Text != "" {
-				fmt.Print("Reasoning: ")
-				printReasoningHeader = false
-				result.printedAnything = true
-				fmt.Print(event.Text)
-				result.printedAnything = true
-			}
 		case "response.output_text.delta", "response.refusal.delta":
 			if printOutputHeader {
-				if !printReasoningHeader {
-					fmt.Print("\n")
-				}
-				fmt.Print("Output: ")
+				fmt.Print("\nOutput: ")
 				printOutputHeader = false
-				result.printedAnything = true
 			}
 			fmt.Print(event.Delta)
-			result.answer += event.Delta
-			result.printedAnything = true
-		case "response.output_text.done":
-			if result.answer == "" && event.Text != "" {
-				if printOutputHeader {
-					if !printReasoningHeader {
-						fmt.Print("\n")
-					}
-					fmt.Print("Output: ")
-					printOutputHeader = false
-					result.printedAnything = true
-				}
-				fmt.Print(event.Text)
-				result.answer += event.Text
-				result.printedAnything = true
-			}
-		case "response.refusal.done":
-			if result.answer == "" && event.Refusal != "" {
-				if printOutputHeader {
-					if !printReasoningHeader {
-						fmt.Print("\n")
-					}
-					fmt.Print("Output: ")
-					printOutputHeader = false
-					result.printedAnything = true
-				}
-				fmt.Print(event.Refusal)
-				result.answer += event.Refusal
-				result.printedAnything = true
-			}
 		case "response.output_item.done":
 			if _, ok := outputItems[event.OutputIndex]; !ok {
 				outputIndexes = append(outputIndexes, event.OutputIndex)
 			}
 			outputItems[event.OutputIndex] = event.Item
 		case "response.completed", "response.incomplete", "response.failed":
-			result.response = event.Response
+			result = event.Response
 		}
 	}
 
@@ -274,23 +210,23 @@ func streamResponse(ctx context.Context, client openai.Client, model string, his
 	if err != nil {
 		return result, err
 	}
-	if result.response.ID == "" {
+	if result.ID == "" {
 		return result, errors.New("response stream ended without a completed response")
 	}
-	if result.response.Status == responses.ResponseStatusFailed {
-		if result.response.Error.Message != "" {
-			return result, errors.New(result.response.Error.Message)
+	if result.Status == responses.ResponseStatusFailed {
+		if result.Error.Message != "" {
+			return result, errors.New(result.Error.Message)
 		}
 		return result, errors.New("response failed")
 	}
-	if result.response.Status == responses.ResponseStatusIncomplete {
-		if result.response.IncompleteDetails.Reason != "" {
-			return result, fmt.Errorf("response incomplete: %s", result.response.IncompleteDetails.Reason)
+	if result.Status == responses.ResponseStatusIncomplete {
+		if result.IncompleteDetails.Reason != "" {
+			return result, fmt.Errorf("response incomplete: %s", result.IncompleteDetails.Reason)
 		}
 		return result, errors.New("response incomplete")
 	}
 	if len(outputItems) > 0 {
-		result.response.Output = orderedOutputItems(outputItems, outputIndexes)
+		result.Output = orderedOutputItems(outputItems, outputIndexes)
 	}
 
 	return result, nil

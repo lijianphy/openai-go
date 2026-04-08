@@ -26,7 +26,6 @@ const (
 )
 
 type streamedCompletion struct {
-	answer     string
 	completion openai.ChatCompletion
 	reasoning  string
 }
@@ -141,15 +140,12 @@ func runMessage(ctx context.Context, client openai.Client, model string, history
 		history = append(history, assistantMessage)
 
 		if len(toolCalls) == 0 {
-			if strings.TrimSpace(streamed.answer) == "" {
-				fmt.Print("Output: [no text returned]")
-			}
 			fmt.Print("\n\n")
 			return history, nil
 		}
 
 		for _, call := range toolCalls {
-			fmt.Printf("Tool: %s\n", call.Function.Name)
+			fmt.Printf("\nTool: %s\n", call.Function.Name)
 			history = append(history, toolRegistry.ExecuteChat(ctx, call))
 		}
 		fmt.Println()
@@ -178,7 +174,6 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 
 	var (
 		acc              openai.ChatCompletionAccumulator
-		answerBuilder    strings.Builder
 		reasoningBuilder strings.Builder
 		result           streamedCompletion
 	)
@@ -198,7 +193,7 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 		choice := chunk.Choices[0]
 		if reasoning := reasoningDelta(chunk); reasoning != "" {
 			if printReasoningHeader {
-				fmt.Print("Reasoning: ")
+				fmt.Print("\nReasoning: ")
 				printReasoningHeader = false
 			}
 			fmt.Print(reasoning)
@@ -207,29 +202,20 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 
 		if choice.Delta.Content != "" {
 			if printOutputHeader {
-				if !printReasoningHeader {
-					fmt.Print("\n")
-				}
-				fmt.Print("Output: ")
+				fmt.Print("\nOutput: ")
 				printOutputHeader = false
 			}
 			fmt.Print(choice.Delta.Content)
-			answerBuilder.WriteString(choice.Delta.Content)
 		}
 
 		if choice.Delta.Refusal != "" {
 			if printOutputHeader {
-				if !printReasoningHeader {
-					fmt.Print("\n")
-				}
-				fmt.Print("Output: ")
+				fmt.Print("\nOutput: ")
 				printOutputHeader = false
 			}
 			fmt.Print(choice.Delta.Refusal)
-			answerBuilder.WriteString(choice.Delta.Refusal)
 		}
 	}
-	result.answer = answerBuilder.String()
 	result.reasoning = reasoningBuilder.String()
 	result.completion = acc.ChatCompletion
 
@@ -312,17 +298,14 @@ func extractFunctionCalls(message openai.ChatCompletionMessage) []openai.ChatCom
 }
 
 func reasoningDelta(chunk openai.ChatCompletionChunk) string {
-
 	raw := chunk.RawJSON()
 	if raw == "" {
 		return ""
 	}
-
 	reasoning := gjson.Get(raw, "choices.0.delta.reasoning_content")
 	if !reasoning.Exists() {
 		return ""
 	}
-
 	return reasoning.String()
 }
 
