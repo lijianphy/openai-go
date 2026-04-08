@@ -80,6 +80,8 @@ func main() {
 	client := openai.NewClient(
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseUrl),
+		option.WithHeader("originator", "codex_cli_rs"),
+		option.WithHeader("User-Agent", "codex_cli_rs/0.117.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.117.0)"),
 		option.WithDebugLog(log.New(&redactingLogWriter{file: debugLogFile}, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)),
 	)
 	toolRegistry := tools.NewRegistry()
