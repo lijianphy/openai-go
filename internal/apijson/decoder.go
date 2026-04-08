@@ -28,7 +28,7 @@ func Unmarshal(raw []byte, to any) error {
 	return d.unmarshal(raw, to)
 }
 
-// UnmarshalRoot is like Unmarshal, but doesn't try to call MarshalJSON on the
+// UnmarshalRoot is like Unmarshal, but doesn't try to call UnmarshalJSON on the
 // root element. Useful if a struct's UnmarshalJSON is overrode to use the
 // behavior of this encoder versus the standard library.
 func UnmarshalRoot(raw []byte, to any) error {
