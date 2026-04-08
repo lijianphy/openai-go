@@ -26,6 +26,7 @@ type chatCompletionResponseStateEnum int
 const (
 	emptyResponseState chatCompletionResponseStateEnum = iota
 	contentResponseState
+	reasoningResponseState
 	refusalResponseState
 	toolResponseState
 	finishedResponseState
@@ -120,6 +121,7 @@ func (cc *ChatCompletion) accumulateDelta(chunk ChatCompletionChunk) bool {
 		}
 
 		choice.Message.Content += delta.Delta.Content
+		choice.Message.ReasoningContent += delta.Delta.ReasoningContent
 		choice.Message.Refusal += delta.Delta.Refusal
 
 		for j := range delta.Delta.ToolCalls {
@@ -175,6 +177,8 @@ func (prev *chatCompletionResponseState) update(chunk ChatCompletionChunk) (just
 	switch {
 	case delta.JSON.Content.Valid():
 		new.state = contentResponseState
+	case delta.JSON.ReasoningContent.Valid():
+		new.state = reasoningResponseState
 	case delta.JSON.Refusal.Valid():
 		new.state = refusalResponseState
 	case delta.JSON.ToolCalls.Valid():

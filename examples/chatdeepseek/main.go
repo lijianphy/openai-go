@@ -15,7 +15,6 @@ import (
 	"github.com/openai/openai-go/examples/tools"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -27,7 +26,6 @@ const (
 
 type streamedCompletion struct {
 	completion openai.ChatCompletion
-	reasoning  string
 }
 
 var authorizationHeaderPattern = regexp.MustCompile(`(?im)^(Authorization:\s*Bearer\s+)[^\r\n]+`)
@@ -136,7 +134,7 @@ func runMessage(ctx context.Context, client openai.Client, model string, history
 			return history, err
 		}
 
-		assistantMessage, toolCalls := buildAssistantReplay(streamed.completion, streamed.reasoning)
+		assistantMessage, toolCalls := buildAssistantReplay(streamed.completion)
 		history = append(history, assistantMessage)
 
 		if len(toolCalls) == 0 {
@@ -173,9 +171,8 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 	)
 
 	var (
-		acc              openai.ChatCompletionAccumulator
-		reasoningBuilder strings.Builder
-		result           streamedCompletion
+		acc    openai.ChatCompletionAccumulator
+		result streamedCompletion
 	)
 
 	printReasoningHeader := true
@@ -191,13 +188,12 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 		}
 
 		choice := chunk.Choices[0]
-		if reasoning := reasoningDelta(chunk); reasoning != "" {
+		if reasoning := choice.Delta.ReasoningContent; reasoning != "" {
 			if printReasoningHeader {
 				fmt.Print("\nReasoning: ")
 				printReasoningHeader = false
 			}
 			fmt.Print(reasoning)
-			reasoningBuilder.WriteString(reasoning)
 		}
 
 		if choice.Delta.Content != "" {
@@ -216,7 +212,6 @@ func streamCompletion(ctx context.Context, client openai.Client, model string, h
 			fmt.Print(choice.Delta.Refusal)
 		}
 	}
-	result.reasoning = reasoningBuilder.String()
 	result.completion = acc.ChatCompletion
 
 	err := stream.Err()
@@ -243,7 +238,7 @@ func formatError(err error) string {
 	return fmt.Sprintf("request failed: %v", err)
 }
 
-func buildAssistantReplay(completion openai.ChatCompletion, reasoning string) (openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionMessageFunctionToolCall) {
+func buildAssistantReplay(completion openai.ChatCompletion) (openai.ChatCompletionMessageParamUnion, []openai.ChatCompletionMessageFunctionToolCall) {
 	if len(completion.Choices) == 0 {
 		return openai.ChatCompletionMessageParamUnion{}, nil
 	}
@@ -251,31 +246,7 @@ func buildAssistantReplay(completion openai.ChatCompletion, reasoning string) (o
 	message := completion.Choices[0].Message
 	toolCalls := extractFunctionCalls(message)
 
-	assistant := openai.ChatCompletionAssistantMessageParam{}
-	if message.Content != "" {
-		assistant.Content.OfString = openai.String(message.Content)
-	}
-	if message.Refusal != "" {
-		assistant.Refusal = openai.String(message.Refusal)
-	}
-	for _, call := range toolCalls {
-		assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-				ID: call.ID,
-				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-					Name:      call.Function.Name,
-					Arguments: call.Function.Arguments,
-				},
-			},
-		})
-	}
-	if reasoning != "" {
-		assistant.SetExtraFields(map[string]any{
-			"reasoning_content": reasoning,
-		})
-	}
-
-	return openai.ChatCompletionMessageParamUnion{OfAssistant: &assistant}, toolCalls
+	return message.ToParam(), toolCalls
 }
 
 func extractFunctionCalls(message openai.ChatCompletionMessage) []openai.ChatCompletionMessageFunctionToolCall {
@@ -295,18 +266,6 @@ func extractFunctionCalls(message openai.ChatCompletionMessage) []openai.ChatCom
 	}
 
 	return calls
-}
-
-func reasoningDelta(chunk openai.ChatCompletionChunk) string {
-	raw := chunk.RawJSON()
-	if raw == "" {
-		return ""
-	}
-	reasoning := gjson.Get(raw, "choices.0.delta.reasoning_content")
-	if !reasoning.Exists() {
-		return ""
-	}
-	return reasoning.String()
 }
 
 func openDebugLogFile() (*os.File, string, error) {
