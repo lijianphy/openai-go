@@ -41,10 +41,16 @@ type redactingLogWriter struct {
 }
 
 type chatHistory struct {
-	file       *os.File
-	path       string
-	items      responses.ResponseInputParam
-	loadedItem int
+	instruction string
+	file        *os.File
+	path        string
+	items       responses.ResponseInputParam
+	loadedItem  int
+}
+
+type historyInstructionRecord struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
 }
 
 func (w *redactingLogWriter) Write(p []byte) (int, error) {
@@ -57,15 +63,16 @@ func (w *redactingLogWriter) Write(p []byte) (int, error) {
 }
 
 func newChatHistory(path string) (*chatHistory, error) {
-	items, err := loadHistoryFile(path)
+	instruction, items, err := loadHistoryFile(path)
 	if err != nil {
 		return nil, err
 	}
 
 	history := &chatHistory{
-		path:       path,
-		items:      items,
-		loadedItem: len(items),
+		instruction: instruction,
+		path:        path,
+		items:       items,
+		loadedItem:  len(items),
 	}
 	if path == "" {
 		return history, nil
@@ -80,6 +87,21 @@ func newChatHistory(path string) (*chatHistory, error) {
 		return nil, fmt.Errorf("open history file %q: %w", path, err)
 	}
 	history.file = file
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, fmt.Errorf("stat history file %q: %w", path, err)
+	}
+	if info.Size() == 0 {
+		if err := appendHistoryInstructionJSONL(file, history.instruction); err != nil {
+			file.Close()
+			return nil, err
+		}
+		if err := file.Sync(); err != nil {
+			file.Close()
+			return nil, fmt.Errorf("sync history file %q: %w", path, err)
+		}
+	}
 
 	return history, nil
 }
@@ -118,42 +140,72 @@ func (h *chatHistory) Append(item responses.ResponseInputItemUnionParam) error {
 	return nil
 }
 
-func loadHistoryFile(path string) (responses.ResponseInputParam, error) {
+func loadHistoryFile(path string) (string, responses.ResponseInputParam, error) {
 	if path == "" {
-		return nil, nil
+		return systemPrompt, nil, nil
 	}
 
 	file, err := os.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
+			return systemPrompt, nil, nil
 		}
-		return nil, fmt.Errorf("open history file %q: %w", path, err)
+		return "", nil, fmt.Errorf("open history file %q: %w", path, err)
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, scannerInitialBytes), historyLineMaxBytes)
 
+	instruction := systemPrompt
 	var items responses.ResponseInputParam
+	firstLine := true
 	for lineNumber := 1; scanner.Scan(); lineNumber++ {
 		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
+		if firstLine {
+			firstLine = false
+			if len(line) == 0 {
+				continue
+			}
+			value, ok, err := unmarshalHistoryInstructionJSON(append([]byte(nil), line...))
+			if err != nil {
+				return "", nil, fmt.Errorf("parse history file %q line %d: %w", path, lineNumber, err)
+			}
+			if ok {
+				if strings.TrimSpace(value) != "" {
+					instruction = value
+				}
+				continue
+			}
+		} else if len(line) == 0 {
 			continue
 		}
 
 		item, err := unmarshalHistoryItemJSON(append([]byte(nil), line...))
 		if err != nil {
-			return nil, fmt.Errorf("parse history file %q line %d: %w", path, lineNumber, err)
+			return "", nil, fmt.Errorf("parse history file %q line %d: %w", path, lineNumber, err)
 		}
 		items = append(items, item)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("read history file %q: %w", path, err)
+		return "", nil, fmt.Errorf("read history file %q: %w", path, err)
 	}
 
-	return items, nil
+	return instruction, items, nil
+}
+
+func appendHistoryInstructionJSONL(file *os.File, instruction string) error {
+	line, err := marshalHistoryInstructionJSON(instruction)
+	if err != nil {
+		return err
+	}
+
+	if _, err := file.Write(append(line, '\n')); err != nil {
+		return fmt.Errorf("write history file %q: %w", file.Name(), err)
+	}
+
+	return nil
 }
 
 func appendHistoryItemJSONL(file *os.File, item responses.ResponseInputItemUnionParam) error {
@@ -183,12 +235,45 @@ func marshalHistoryItemJSON(item responses.ResponseInputItemUnionParam) ([]byte,
 	return compactData, nil
 }
 
+func marshalHistoryInstructionJSON(instruction string) ([]byte, error) {
+	data, err := json.Marshal(historyInstructionRecord{
+		Type:    "instruction",
+		Content: instruction,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal history instruction: %w", err)
+	}
+
+	compactData, err := compactJSON(data)
+	if err != nil {
+		return nil, fmt.Errorf("compact history instruction json: %w", err)
+	}
+
+	return compactData, nil
+}
+
 func unmarshalHistoryItemJSON(data []byte) (responses.ResponseInputItemUnionParam, error) {
 	if !json.Valid(data) {
 		return responses.ResponseInputItemUnionParam{}, fmt.Errorf("invalid history item json")
 	}
 
 	return param.Override[responses.ResponseInputItemUnionParam](json.RawMessage(data)), nil
+}
+
+func unmarshalHistoryInstructionJSON(data []byte) (string, bool, error) {
+	if !json.Valid(data) {
+		return "", false, fmt.Errorf("invalid history instruction json")
+	}
+
+	var record historyInstructionRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return "", false, err
+	}
+	if record.Type != "instruction" {
+		return "", false, nil
+	}
+
+	return record.Content, true, nil
 }
 
 func compactJSON(data []byte) ([]byte, error) {
@@ -204,20 +289,24 @@ func main() {
 	historyFile := flag.String("history-file", "", "load and append conversation history from a JSONL file")
 	flag.Parse()
 
-	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	baseUrl := strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
 	model := strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
-	if baseUrl == "" {
-		baseUrl = defaultBaseURL
-	} else {
-		fmt.Printf("Using custom OpenAI API base URL: %s\n", baseUrl)
-	}
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "OPENAI_API_KEY is not set")
-		os.Exit(1)
-	}
 	if model == "" {
 		model = defaultModel
+	}
+
+	authOptions, authDescription, authDefaultBaseURL, err := resolveChatAuth(os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to initialize authentication: %v\n", err)
+		os.Exit(1)
+	}
+	if baseUrl == "" {
+		baseUrl = authDefaultBaseURL
+		if baseUrl == "" {
+			baseUrl = defaultBaseURL
+		}
+	} else {
+		fmt.Printf("Using custom OpenAI API base URL: %s\n", baseUrl)
 	}
 
 	debugLogFile, debugLogPath, err := openDebugLogFile()
@@ -231,13 +320,14 @@ func main() {
 		}
 	}()
 
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
+	clientOptions := append([]option.RequestOption{}, authOptions...)
+	clientOptions = append(clientOptions,
 		option.WithBaseURL(baseUrl),
 		option.WithHeader("originator", "codex_cli_rs"),
 		option.WithHeader("User-Agent", "codex_cli_rs/0.117.0 (Ubuntu 24.4.0; x86_64) WindowsTerminal (codex-tui; 0.117.0)"),
 		option.WithDebugLog(log.New(&redactingLogWriter{file: debugLogFile}, "", log.LstdFlags|log.Lmicroseconds|log.LUTC)),
 	)
+	client := openai.NewClient(clientOptions...)
 	toolRegistry := tools.NewRegistry()
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, scannerInitialBytes), scannerMaxBytes)
@@ -253,14 +343,8 @@ func main() {
 		}
 	}()
 
-	if history.Len() == 0 {
-		if err := history.Append(responses.ResponseInputItemParamOfMessage(systemPrompt, responses.EasyInputMessageRoleSystem)); err != nil {
-			fmt.Fprintf(os.Stderr, "failed to initialize history: %v\n", err)
-			os.Exit(1)
-		}
-	}
-
 	fmt.Printf("Simple OpenAI chatbot started with model %s\n", model)
+	fmt.Printf("Authentication: %s\n", authDescription)
 	fmt.Printf("OpenAI debug log: %s\n", debugLogPath)
 	if history.path != "" {
 		fmt.Printf("History file: %s\n", history.path)
@@ -309,7 +393,7 @@ func main() {
 // runMessage executes one committed user message, including any follow-up tool-call rounds.
 func runMessage(ctx context.Context, client openai.Client, model string, history *chatHistory, toolRegistry *tools.Registry) error {
 	for range maxToolRounds {
-		response, err := streamResponse(ctx, client, model, history.Items(), toolRegistry.Definitions())
+		response, err := streamResponse(ctx, client, model, history.instruction, history.Items(), toolRegistry.Definitions())
 		if err != nil {
 			fmt.Println()
 			return err
@@ -338,9 +422,10 @@ func runMessage(ctx context.Context, client openai.Client, model string, history
 }
 
 // streamResponse streams a single model response and captures the final payload.
-func streamResponse(ctx context.Context, client openai.Client, model string, history responses.ResponseInputParam, availableTools []responses.ToolUnionParam) (responses.Response, error) {
+func streamResponse(ctx context.Context, client openai.Client, model string, instruction string, history responses.ResponseInputParam, availableTools []responses.ToolUnionParam) (responses.Response, error) {
 	stream := client.Responses.NewStreaming(ctx, responses.ResponseNewParams{
-		Model: model,
+		Model:        model,
+		Instructions: openai.String(instruction),
 		Include: []responses.ResponseIncludable{
 			responses.ResponseIncludableReasoningEncryptedContent,
 		},
