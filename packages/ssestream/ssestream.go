@@ -77,14 +77,16 @@ func (s *eventStreamDecoder) Next() bool {
 	event := ""
 	data := bytes.NewBuffer(nil)
 
+outer:
 	for s.scn.Scan() {
 		txt := s.scn.Bytes()
 
-		// Dispatch event on an empty line
 		if len(txt) == 0 {
-			if event == "" && data.Len() == 0 {
+			if data.Len() == 0 {
 				continue
 			}
+
+			// Dispatch event
 			s.evt = Event{
 				Type: event,
 				Data: data.Bytes(),
@@ -109,11 +111,11 @@ func (s *eventStreamDecoder) Next() bool {
 		case "data":
 			_, s.err = data.Write(value)
 			if s.err != nil {
-				break
+				break outer
 			}
 			_, s.err = data.WriteRune('\n')
 			if s.err != nil {
-				break
+				break outer
 			}
 		}
 	}
