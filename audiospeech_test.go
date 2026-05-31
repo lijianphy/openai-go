@@ -25,12 +25,13 @@ func TestAudioSpeechNewWithOptionalParams(t *testing.T) {
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("My API Key"),
+		option.WithAdminAPIKey("My Admin API Key"),
 	)
 	resp, err := client.Audio.Speech.New(context.TODO(), openai.AudioSpeechNewParams{
 		Input: "input",
 		Model: openai.SpeechModelTTS1,
 		Voice: openai.AudioSpeechNewParamsVoiceUnion{
-			OfString: openai.String("string"),
+			OfAudioSpeechNewsVoiceString2: openai.String("alloy"),
 		},
 		Instructions:   openai.String("instructions"),
 		ResponseFormat: openai.AudioSpeechNewParamsResponseFormatMP3,

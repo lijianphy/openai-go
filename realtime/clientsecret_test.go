@@ -27,6 +27,7 @@ func TestClientSecretNewWithOptionalParams(t *testing.T) {
 	client := openai.NewClient(
 		option.WithBaseURL(baseURL),
 		option.WithAPIKey("My API Key"),
+		option.WithAdminAPIKey("My Admin API Key"),
 	)
 	_, err := client.Realtime.ClientSecrets.New(context.TODO(), realtime.ClientSecretNewParams{
 		ExpiresAfter: realtime.ClientSecretNewParamsExpiresAfter{
@@ -47,6 +48,7 @@ func TestClientSecretNewWithOptionalParams(t *testing.T) {
 							Type: realtime.NoiseReductionTypeNearField,
 						},
 						Transcription: realtime.AudioTranscriptionParam{
+							Delay:    realtime.AudioTranscriptionDelayMinimal,
 							Language: openai.String("language"),
 							Model:    realtime.AudioTranscriptionModelWhisper1,
 							Prompt:   openai.String("prompt"),
@@ -71,17 +73,18 @@ func TestClientSecretNewWithOptionalParams(t *testing.T) {
 						},
 						Speed: openai.Float(0.25),
 						Voice: realtime.RealtimeAudioConfigOutputVoiceUnionParam{
-							OfString: openai.String("string"),
+							OfRealtimeAudioConfigOutputVoiceString2: openai.String("alloy"),
 						},
 					},
 				},
 				Include:      []string{"item.input_audio_transcription.logprobs"},
 				Instructions: openai.String("instructions"),
 				MaxOutputTokens: realtime.RealtimeSessionCreateRequestMaxOutputTokensUnionParam{
-					OfInt: openai.Int(0),
+					OfInf: constant.ValueOf[constant.Inf](),
 				},
-				Model:            realtime.RealtimeSessionCreateRequestModelGPTRealtime,
-				OutputModalities: []string{"text"},
+				Model:             realtime.RealtimeSessionCreateRequestModelGPTRealtime,
+				OutputModalities:  []string{"text"},
+				ParallelToolCalls: openai.Bool(true),
 				Prompt: responses.ResponsePromptParam{
 					ID: "id",
 					Variables: map[string]responses.ResponsePromptVariableUnionParam{
@@ -90,6 +93,9 @@ func TestClientSecretNewWithOptionalParams(t *testing.T) {
 						},
 					},
 					Version: openai.String("version"),
+				},
+				Reasoning: realtime.RealtimeReasoningParam{
+					Effort: realtime.RealtimeReasoningEffortMinimal,
 				},
 				ToolChoice: realtime.RealtimeToolChoiceConfigUnionParam{
 					OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsNone),
